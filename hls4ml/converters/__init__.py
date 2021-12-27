@@ -3,6 +3,7 @@ import os
 import yaml
 import importlib
 import warnings
+from qkeras.utils import _add_supported_quantized_objects
 
 from hls4ml.utils.config import create_config
 
@@ -85,9 +86,12 @@ def parse_yaml_config(config_file):
     """
     def construct_keras_model(loader, node):
         from tensorflow.keras.models import load_model
+        from qkeras.utils import _add_supported_quantized_objects
+        co = {}
+        _add_supported_quantized_objects(co)
 
         model_str = loader.construct_scalar(node)
-        return load_model(model_str)
+        return load_model(model_str, custom_objects=co)
 
     yaml.add_constructor(u'!keras_model', construct_keras_model, Loader=yaml.SafeLoader)
 
