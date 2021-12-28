@@ -3,7 +3,6 @@ import os
 import yaml
 import importlib
 import warnings
-from qkeras.utils import _add_supported_quantized_objects
 
 from hls4ml.utils.config import create_config
 
