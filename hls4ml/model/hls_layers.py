@@ -684,7 +684,7 @@ class DenseBatchnorm(Dense):
         super(DenseBatchnorm, self).initialize()
         folded_weights, folded_bias = self._get_folded_weights()
         if self.model.config.is_resource_strategy(self) and self.model.config.backend.name in ['Vivado', 'VivadoAccelerator']:
-            self.weights['weight'].data_unquantized = folded_weights
+            self.weights['weight'].data_unquantized = np.transpose(folded_weights)
             self.weights['weight'].data = self.get_attr('weight_quantizer')(self.weights['weight'].data_unquantized)
 
         else:
@@ -1954,4 +1954,3 @@ layer_map = {
 def register_layer(name, clazz):
     global layer_map
     layer_map[name] = clazz
-    
