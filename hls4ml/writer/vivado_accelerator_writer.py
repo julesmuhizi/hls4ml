@@ -1,5 +1,6 @@
 import os
 from shutil import copyfile
+from shutil import copytree
 
 from hls4ml.templates.vivado_accelerator_config import VivadoAcceleratorConfig
 from hls4ml.writer.vivado_writer import VivadoWriter
@@ -332,6 +333,13 @@ class VivadoAcceleratorWriter(VivadoWriter):
         filedir = os.path.dirname(os.path.abspath(__file__))
         copyfile(os.path.join(filedir, self.vivado_accelerator_config.get_tcl_file_path()),
                  '{}/design.tcl'.format(model.config.get_output_dir()))
+        if self.vivado_accelerator_config.get_interface() == 'axi_master' and self.vivado_accelerator_config.board == "arty-a7-100t":
+            copytree(os.path.join(filedir, self.vivado_accelerator_config.get_vivado_ip_wrapper_path()),
+                     '{}/'.format(model.config.get_output_dir()),
+                     dirs_exist_ok=True)
+            copytree(os.path.join(filedir, self.vivado_accelerator_config.get_vivado_constraints_path()),
+                     '{}/'.format(model.config.get_output_dir()),
+                     dirs_exist_ok=True)
         f = open('{}/project.tcl'.format(model.config.get_output_dir()), 'w')
         f.write('variable myproject\n')
         f.write('set myproject "{}"\n'.format(model.config.get_project_name()))
@@ -340,20 +348,137 @@ class VivadoAcceleratorWriter(VivadoWriter):
             f.write('set bit_width_hls_output {}\n'.format(in_bit))
             f.write('set bit_width_hls_input {}\n'.format(out_bit))
         if model.config.config['HLSConfig']['Model'].get('FIFO_opt'):
-            f.write('set fifo_opt 1')
+            f.write('set fifo_opt 1\n')
         else:
-            f.write('set fifo_opt 0')
+            f.write('set fifo_opt 0\n')
+        if model.config.config['HLSConfig']['Model'].get('EEMBC_power'):
+            f.write('set eembc_power 1\n')
+        else:
+            f.write('set eembc_power 0\n')
         f.close()
 
+    def write_header_file(model, X, y, y_keras, y_hls, n_samples, filename='data.h'):
+        vivado_accelerator_config = VivadoAcceleratorConfig(model.config, model.get_input_variables(),
+                                                            model.get_output_variables())
+        inp_axi_t, out_axi_t, inp, out = vivado_accelerator_config.get_corrected_types()
+        header_file = open(filename, 'w')
+        (n_X_samples, n_X_inputs) = X.shape
+        (n_y_samples, n_y_outputs) = y.shape
+        (n_y_keras_samples, n_y_keras_outputs) = y_keras.shape
+        (n_y_hls_samples, n_y_hls_outputs) = y_hls.shape
+   
+        header_file.write('#ifndef __DATA_H__\n')
+        header_file.write('#define __DATA_H__\n')
+        header_file.write('/* out of {} */\n'.format(n_X_samples))
+        header_file.write('#define N_SAMPLES {}\n'.format(n_samples))
+        header_file.write('\n')
+        header_file.write('#define N_X_INPUTS {}\n'.format(n_X_inputs))
+        header_file.write('const {} data_X_inputs[N_SAMPLES*N_X_INPUTS] = {{\n'.format(inp_axi_t))
+        for s in range(n_samples):
+            header_file.write('    ')
+            for i in range(n_X_inputs):
+                header_file.write('{}, '.format(X[s][i]))
+            header_file.write('\n')
+        header_file.write('};\n')
+        header_file.write('\n')
+        header_file.write('/* Ground truth - for validation */\n')
+        header_file.write('#define N_Y_OUTPUTS {}\n'.format(n_y_outputs))
+        header_file.write('const float data_y_outputs[N_SAMPLES*N_Y_OUTPUTS] = {\n')
+        for s in range(n_samples):
+            header_file.write('    ')
+            for o in range(n_y_outputs):
+                header_file.write('{}, '.format(y[s][o]))
+            header_file.write('\n')
+        header_file.write('};\n')
+        header_file.write('\n')
+        header_file.write('/* Keras outputs - for validation */\n')
+        header_file.write('#define N_Y_KERAS_OUTPUTS {}\n'.format(n_y_keras_outputs))
+        header_file.write('')
+        header_file.write('const float data_y_keras_outputs[N_SAMPLES*N_Y_KERAS_OUTPUTS] = {\n')
+        for s in range(n_samples):
+            header_file.write('    ')
+            for o in range(n_y_keras_outputs):
+                header_file.write('{}, '.format(y_keras[s][o]))
+            header_file.write('\n')
+        header_file.write('};\n')
+        header_file.write('\n')
+        header_file.write('/* csim outputs - for verification */\n')
+        header_file.write('#define N_Y_HLS_OUTPUTS {}\n'.format(n_y_hls_outputs))
+        header_file.write('')
+        header_file.write('const {} data_y_hls_outputs[N_SAMPLES*N_Y_HLS_OUTPUTS] = {{\n'.format(out_axi_t))
+        for s in range(n_samples):
+            header_file.write('    ')
+            for o in range(n_y_hls_outputs):
+                header_file.write('{}, '.format(y_hls[s][o]))
+            header_file.write('\n')
+        header_file.write('};\n')
+        header_file.write('#endif\n')
+        header_file.close()
+ 
     def write_driver(self, model):
         filedir = os.path.dirname(os.path.abspath(__file__))
-        copyfile(os.path.join(filedir, self.vivado_accelerator_config.get_driver_path()),
-                 ('{}/' + self.vivado_accelerator_config.get_driver_file()).format(model.config.get_output_dir()))
+        srcfiles = os.path.join(filedir, self.vivado_accelerator_config.get_driver_path())
+        dstfiles = ('{}/' + self.vivado_accelerator_config.get_driver_files()).format(model.config.get_output_dir())
+        if os.path.isdir(srcfiles):
+            copytree(srcfiles, dstfiles, dirs_exist_ok=True)
+        else:
+            copyfile(srcfiles, dstfiles)
         
     def write_new_tar(self, model):
         os.remove(model.config.get_output_dir() + '.tar.gz')
         super(VivadoAcceleratorWriter, self).write_tar(model)
-        
+
+    def apply_patches(self, model):
+        '''
+        Apply patches.
+        '''
+        filedir = os.path.dirname(os.path.abspath(__file__))
+
+        indent = '    '
+
+        ###################
+        # patch myproject_axi.h
+        ###################  
+        oldfile = '{}/firmware/{}_axi.h'.format(model.config.get_output_dir(), model.config.get_project_name())
+        newfile = '{}/firmware/{}_axi_patch.h'.format(model.config.get_output_dir(), model.config.get_project_name())
+
+        f = open(oldfile,'r')
+        fout = open(newfile, 'w')
+
+        for line in f.readlines():
+            if 'typedef' in line and 'input_axi_t;' in line:
+                # hardcoded ap_uint<8> input
+                newline = 'typedef ap_uint<8> input_axi_t;\n'
+            else:
+                newline = line
+            fout.write(newline)
+
+        f.close()
+        fout.close()
+        os.rename(newfile, oldfile)
+
+        ###################
+        # patch myproject_axi.cpp
+        ###################
+        oldfile = '{}/firmware/{}_axi.cpp'.format(model.config.get_output_dir(), model.config.get_project_name())
+        newfile = '{}/firmware/{}_axi_patch.cpp'.format(model.config.get_output_dir(), model.config.get_project_name())
+
+        f = open(oldfile,'r')
+        fout = open(newfile, 'w')
+
+        for line in f.readlines():
+            if 'ctype[j] = typename input_t::value_type' in line:
+                # these lines are hardcoded to do the bitshift by 256
+                newline = indent + indent + indent + 'ap_ufixed<16,8> tmp = in[i * input_t::size + j]; // store 8 bit input in a larger temp variable\n'
+                newline += indent + indent + indent + 'ctype[j] = typename input_t::value_type(tmp >> 8); // shift right by 8 (div by 256) and select only the decimal of the larger temp variable\n'
+            else:
+                newline = line
+            fout.write(newline)
+
+        f.close()
+        fout.close()
+        os.rename(newfile, oldfile)
+
     def write_hls(self, model):
         """
         Write the HLS project. Calls the VivadoBackend writer, and extra steps for VivadoAccelerator/AXI interface
@@ -366,5 +491,7 @@ class VivadoAcceleratorWriter(VivadoWriter):
         self.write_wrapper_test(model)
         self.write_axi_wrapper(model)
         self.modify_build_script(model)
+        if model.config.get_config_value('ApplyPatches'):
+            self.apply_patches(model)
         self.write_new_tar(model)
 

@@ -200,6 +200,7 @@ class InplaceVariable():
         self.dim_names = dim_names
         self.type = proxy.type
         self.cppname = proxy.name
+        self.name = proxy.name
         self.size = proxy.size
 
     def get_shape(self):
@@ -365,6 +366,7 @@ class Layer(object):
         self.set_attr('accum_t', accum_t.precision)
         self.reuse_factor = self.model.config.get_reuse_factor(self)
         self.target_cycles = self.model.config.get_target_cycles(self)
+        self.merged_relu = False
 
         layer_config = self.model.config.get_layer_config(self)
         for config_key, config_value in layer_config.items():
@@ -409,6 +411,10 @@ class Layer(object):
             return self.variables[output_name]
         else:
             return next(iter(self.variables.values()))
+
+    def set_output_variable(self, output_name, output_value):
+        self.variables[output_name] = output_value
+
 
     def get_weights(self, var_name=None):
         if var_name:
@@ -522,8 +528,8 @@ class Layer(object):
         params['config'] = 'config{}'.format(self.index)
         params['input_t'] = self.get_input_variable().type.name
         params['output_t'] = self.get_output_variable().type.name
-        params['input'] = self.get_input_variable().cppname
-        params['output'] = self.get_output_variable().cppname
+        params['input'] = self.get_input_variable().name
+        params['output'] = self.get_output_variable().name
 
         return params
 
@@ -542,6 +548,12 @@ class Layer(object):
 
     def get_layer_precision(self):
         return self.precision
+
+    def get_merged_relu(self):
+        return self.merged_relu
+    
+    def set_merged_relu(self, merged_relu):
+        self.merged_relu = merged_relu # Bool flag to set merged_relu
 
     # myproject.cpp/h
     def function_cpp(self):
@@ -591,7 +603,6 @@ class Reshape(Layer):
         out_name = self.outputs[0]
         proxy = self.get_input_variable()
         out = InplaceVariable(shape, dims, proxy, index=self.get_input_node().index)
-
         self.variables[out_name] = out
         self.model.register_output_variable(out_name, out)
 
@@ -648,8 +659,60 @@ class Dense(Layer):
         params['nonzeros'] = self.get_weights('weight').nonzeros
         params['product_type'] = self.model.config.backend.product_type(self.get_input_variable().type.precision, self.get_weights('weight').type.precision)
         params['strategy'] = self.get_attr('strategy')
-
+        params['merged_relu'] = "true" if self.get_merged_relu() else "false"
+        params['out_t'] = self.get_output_variable().type.name
         return self._config_template.format(**params)
+
+class DenseBatchnorm(Dense):
+    def _get_folded_weights(self):
+        """
+        Function to get the batchnorm folded weights.
+        This function converts the weights by folding batchnorm parameters into
+        the weight of QDense. The high-level equation:
+        W_fold = gamma * W / sqrt(variance + epsilon)
+        bias_fold = gamma * (bias - moving_mean) / sqrt(variance + epsilon) + beta
+        """
+        kernel = self.model.get_weights_data(self.name, 'kernel')
+        bias = self.model.get_weights_data(self.name, 'bias')
+        if bias is None:
+            bias = 0
+
+        # get batchnorm weights and moving stats
+        gamma = self.model.get_weights_data(self.name, 'gamma')
+        beta = self.model.get_weights_data(self.name, 'beta')
+        moving_mean = self.model.get_weights_data(self.name, 'moving_mean')
+        moving_variance = self.model.get_weights_data(self.name, 'moving_variance')
+        # get the inversion factor so that we replace division by multiplication
+        inv = np.reciprocal(np.sqrt(moving_variance + self.get_attr('epsilon')))
+        if gamma is not None:
+            inv *= gamma
+
+        # wrap conv kernel and bias with bn parameters
+        folded_kernel = inv * kernel
+        folded_bias = inv * (bias - moving_mean) + beta
+
+        return [folded_kernel, folded_bias]
+
+    def initialize(self):
+        super(DenseBatchnorm, self).initialize()
+        folded_weights, folded_bias = self._get_folded_weights()
+        if self.model.config.is_resource_strategy(self) and self.model.config.backend.name in ['Vivado', 'VivadoAccelerator']:
+            self.weights['weight'].data_unquantized = np.transpose(folded_weights)
+            self.weights['weight'].data = self.get_attr('weight_quantizer')(self.weights['weight'].data_unquantized)
+
+        else:
+            self.weights['weight'].data_unquantized = folded_weights
+            self.weights['weight'].data = self.get_attr('weight_quantizer')(folded_weights)
+        self.weights['bias'].data_unquantized = folded_bias
+        bias_q = self.get_attr('bias_quantizer')
+        if bias_q is not None:
+            self.weights['bias'].data = bias_q(folded_bias)
+
+    def function_cpp(self):
+        return super(DenseBatchnorm, self).function_cpp()
+
+    def config_cpp(self):
+        return super(DenseBatchnorm, self).config_cpp()
 
 class Conv1D(Layer):
     def initialize(self):
@@ -856,7 +919,9 @@ class Conv2D(Layer):
         else:
             shape = [self.attributes['n_filt'], self.attributes['out_height'], self.attributes['out_width']]
             dims = ['N_FILT_{}'.format(self.index), 'OUT_HEIGHT_{}'.format(self.index), 'OUT_WIDTH_{}'.format(self.index)]
+        self.attributes['intermediate_index'] = self.index
         self.add_output_variable(shape, dims)
+        self.intermediate_op = self.get_output_variable()
         self.add_weights(quantizer=self.get_attr('weight_quantizer'))
         self.add_bias(quantizer=self.get_attr('bias_quantizer'))
         if len(self.weights['weight'].data.shape) == 2: # This can happen if we assign weights of Dense layer to 1x1 Conv2D
@@ -923,6 +988,8 @@ class Conv2D(Layer):
         mult_params['n_in'] = self.get_attr('n_chan') * self.get_attr('filt_height') * self.get_attr('filt_width')
         mult_params['n_out'] = self.get_attr('n_filt')
         mult_params['product_type'] = self.model.config.backend.product_type(self.get_input_variable().type.precision, self.get_weights('weight').type.precision)
+        mult_params['merged_relu'] = "true" if self.get_merged_relu() else "false"
+        mult_params['out_t'] = self.intermediate_op.type.name
         mult_config = self._config_template[1].format(**mult_params)
 
         return mult_config + '\n' + conv_config
@@ -1867,6 +1934,7 @@ layer_map = {
     'BinaryDense'            : Dense,
     'TernaryDense'           : Dense,
     'QDense'                 : Dense,
+    'QDenseBatchnorm'        : DenseBatchnorm,
     'Conv1D'                 : Conv1D,
     'QConv1D'                : Conv1D,
     'Conv2D'                 : Conv2D,

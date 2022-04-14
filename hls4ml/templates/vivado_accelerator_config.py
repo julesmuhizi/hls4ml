@@ -14,7 +14,7 @@ class VivadoAcceleratorConfig(object):
             self.part = board_info['part']
         else:
             raise Exception('The board does not appear in supported_boards.json file')
-        
+
         if self.config.get('XilinxPart') is not None:
             if self.config.get('XilinxPart') != self.part:
                 print('WARNING: You set a XilinxPart that does not correspond to the Board you specified. The correct '
@@ -29,7 +29,7 @@ class VivadoAcceleratorConfig(object):
                 if prec.get('Input') is None or prec.get('Output') is None:
                     raise Exception('Input and Output fields must be provided in the AcceleratorConfig->Precision')
         else:
-            accel_config = {'Precision': 
+            accel_config = {'Precision':
                                 {
                                     'Input': 'float',
                                     'Output': 'float'
@@ -61,16 +61,16 @@ class VivadoAcceleratorConfig(object):
         if out_axi_t not in ['float', 'double']:
             self.output_type = self._next_factor8_type(config.backend.convert_precision_string(out_axi_t))
 
-        if self.input_type is 'float':
+        if inp_axi_t == 'float':
             self.input_bitwidth = 32
-        elif self.input_type is 'double':
+        elif out_axi_t == 'double':
             self.input_bitwidth = 64
         else:
             self.input_bitwidth = config.backend.convert_precision_string(inp_axi_t).width
 
-        if out_axi_t is 'float':
+        if out_axi_t == 'float':
             self.output_bitwidth = 32
-        elif out_axi_t is 'double':
+        elif out_axi_t == 'double':
             self.output_bitwidth = 64
         else:
             self.output_bitwidth = config.backend.convert_precision_string(out_axi_t).width
@@ -120,11 +120,21 @@ class VivadoAcceleratorConfig(object):
 
     def get_driver_path(self):
         return '../templates/vivado_accelerator/' + self.board + '/' + self.driver + '_drivers/' + \
-               self.get_driver_file()
+               self.get_driver_files()
 
-    def get_driver_file(self):
-        driver_ext = '.py' if self.driver == 'python' else '.h'
-        return self.interface + '_driver' + driver_ext
+    def get_vivado_ip_wrapper_path(self):
+        return '../templates/vivado_accelerator/' + self.board + '/verilog_wrappers'
+
+    def get_vivado_constraints_path(self):
+        return '../templates/vivado_accelerator/' + self.board + '/xdc_constraints'
+
+    def get_driver_files(self):
+        if self.driver == 'c':
+            driver_dir = 'sdk'
+            return driver_dir
+        elif self.driver == 'python':
+            driver_ext = '.py'
+            return self.interface + '_driver' + driver_ext
 
     def get_input_type(self):
         return self.input_type
