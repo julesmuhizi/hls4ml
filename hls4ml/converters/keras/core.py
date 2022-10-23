@@ -57,7 +57,7 @@ class TernaryQuantizer(Quantizer):
         return np.where(data > 0.5, ones, np.where(data <= -0.5, -ones, zeros))
 
 
-dense_layers = ['Dense', 'BinaryDense', 'TernaryDense', 'QDenseBatchnorm']
+dense_layers = ['Dense', 'BinaryDense', 'TernaryDense']
 @keras_handler(*dense_layers)
 def parse_dense_layer(keras_layer, input_names, input_shapes, data_reader, config):
     assert('Dense' in keras_layer['class_name'])
