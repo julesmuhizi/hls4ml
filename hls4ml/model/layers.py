@@ -349,12 +349,6 @@ class DenseBatchnorm(Dense):
         if bias_q is not None:
             self.weights['bias'].data = bias_q(folded_bias)
 
-    def function_cpp(self):
-        return super(DenseBatchnorm, self).function_cpp()
-
-    def config_cpp(self):
-        return super(DenseBatchnorm, self).config_cpp()
-
 class Conv1D(Layer):
     _expected_attributes = [
         Attribute('in_width'),
